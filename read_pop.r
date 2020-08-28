@@ -1,6 +1,9 @@
 library(tidyverse)
 
-### add state names, join to whatever data you are using
+
+### the ACS age/sex/race files are not usable. the AIAN alone category misses ~ 50% of the population
+### switching to 2010 Census for national and SEER for age-spec. SEER is undercount relative to census
+### but can't get age-spec pop for AIAN in combination with others in Census
 
 aianh_2018 <- read_csv("./data/nhgis0049_ds240_20185_2018_aianhh.csv")
 

@@ -1,7 +1,7 @@
 #### Read and format fatal encounters for 
 library(tidyverse)
 library(lubridate)
-library(mice)
+
 
 # ... read fatal encounters
 fe <- read_csv("./data/fe_8_4_20.csv", 
@@ -27,14 +27,12 @@ fe<-fe %>%
          race = "Subject's race",
          state = `Location of death (state)`,
          county = `Location of death (county)`,
-         lat = Latitude,
-         lon = Longitude,
          agency = `Agency responsible for death`,
          cause_of_death = `Cause of death`,
          official_disposition = `Dispositions/Exclusions INTERNAL USE, NOT FOR ANALYSIS`,
          year = `Date (Year)`) %>% 
   select(id, name, age, gender, race, state,
-         county, lat, lon, agency, cause_of_death, official_disposition,
+         county, Latitude, Longitude, agency, cause_of_death, official_disposition,
          year) %>% 
   filter(year>2010) %>% 
   filter(race=="Native American/Alaskan") %>% 
@@ -74,7 +72,9 @@ fe<-fe %>%
 blocks<-read_csv("./data/block_map.csv")
 
 fe<-fe %>% 
-  left_join(blocks)
+  left_join(blocks %>% 
+              rename(Latitude = lat,
+                     Longitude = long))
 
 ### make pl280 variable
 

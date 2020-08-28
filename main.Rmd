@@ -1,0 +1,273 @@
+---
+title: "main"
+author: "Frank Edwards"
+date: "8/27/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+library(tidyverse)
+
+## read in fatal encounters as fe
+## fe includes cases from 1/1/2011 - 8/20/2020
+## 3,519 days / 365.25 = 9.6 years
+
+source("read_fe.R")
+
+## read in 14-18 ACS nhgis pop data as
+## aianh_dat; county_dat; state_dat; nation_dat; aian_shp_file
+
+source("read_pop.r")
+
+### read and join shape files
+source("join_shapes.r")
+
+### compute distance between deaths and aianh borders / ms river
+source("distance_to_aianh.r")
+
+
+### format state-level data
+
+library(usmap)
+us_map <- usmap::us_map() 
+
+us_map<-us_map %>% 
+  rename(state = abbr)
+
+## state-level risk
+
+state_counts<-fe %>% 
+  group_by(state, pl280) %>% 
+  summarise(n = n()) %>% 
+  right_join(state_dat %>% 
+              filter(sex == "Total", age == "Total") %>% 
+              select(state, pop, error)) %>% 
+  mutate(n = ifelse(is.na(n), 0, n)) %>% 
+  filter(!(is.na(state))) %>% 
+  mutate(pop_max = pop + error, ### apply ACS margins for 90% interval
+         pop_min = pop - error) %>% 
+  mutate(n_year = n / (3519 / 365.25)) %>% ### normalize to deaths / year
+  mutate(n_rt_max = n_year / pop_min * 1e5,
+         n_rt_min = n_year / pop_max* 1e5,
+         n_rt = n_year / pop * 1e5) 
+
+state_counts_map<-state_counts %>% 
+  right_join(us_map) %>% 
+  mutate(n_rt = ifelse(is.na(n_rt), 0, n_rt))
+
+state_counts_map$pl280<-case_when(
+  state_counts_map$state %in% c("CA", "MN", "NE", "OR", 
+                  "WI", "AK") ~ "Mandatory",
+  state_counts_map$state %in% c("NV", "FL", "ID", "IA", 
+                  "WA", "SD", "MT", "ND", 
+                  "AZ", "UT") ~ "Optional",
+  T ~ "Non-PL280"
+)
+
+library(usmap)
+us_map <- usmap::us_map() 
+
+us_map<-us_map %>% 
+  rename(state = abbr)
+
+state_counts_map<-state_counts %>% 
+  right_join(us_map) %>% 
+  mutate(n_rt = ifelse(is.na(n_rt), 0, n_rt))
+
+state_counts_map$pl280<-case_when(
+  state_counts_map$state %in% c("CA", "MN", "NE", "OR", 
+                  "WI", "AK") ~ "Mandatory",
+  state_counts_map$state %in% c("NV", "FL", "ID", "IA", 
+                  "WA", "SD", "MT", "ND", 
+                  "AZ", "UT") ~ "Optional",
+  T ~ "Non-PL280"
+)
+
+```
+
+
+
+## Descriptives
+
+```{r}
+####################################
+############ MAPS
+####################################
+########################
+library(viridisLite)
+
+ggplot(state_counts_map,
+       aes(x=x, y = y, fill = n_rt,
+           group = group)) + 
+  geom_polygon(color = "black") + 
+  theme_void() +
+  labs(fill = "") +
+  theme(legend.position = "bottom") + 
+  scale_fill_viridis_c()
+```
+
+
+```{r}
+### tables/figures
+
+## age and sex specific risk
+## adjusted to per year per 100,000 for 9.6 year period
+
+age_sex<- fe %>% 
+  group_by(age_cat, gender) %>% 
+  summarise(deaths = n()) %>% 
+  filter(!(is.na(age_cat))) %>% 
+  right_join(nation_dat %>% 
+              select(error, sex, age, pop) %>% 
+              filter(age!="Total", sex!="Total") %>% 
+              mutate(sex = ifelse(sex=="M", "Male", "Female")) %>% 
+              rename(gender = sex, age_cat = age)) %>% 
+  mutate(deaths = ifelse(is.na(deaths), 0, deaths)) %>% 
+  mutate(mort_lwr = deaths / (pop+error) /(3519/365.25) * 1e5,
+         mort_upr = deaths/(pop-error) /(3519/365.25) * 1e5,
+         mort = deaths / pop /(3519/365.25) * 1e5) %>% 
+  mutate(age_lwr = 
+           case_when(
+             age_cat=="85+" ~ "85",
+             nchar(age_cat)==3 ~ substr(age_cat, 1, 1),
+             nchar(age_cat)==5 ~ substr(age_cat, 1, 2)
+           )) %>% 
+  mutate(age_lwr = as.numeric(age_lwr))
+
+ggplot(age_sex, 
+       aes(y = mort, 
+           x = age_lwr,
+           ymin = mort_lwr,
+           ymax = mort_upr)) + 
+  geom_line() +
+  geom_point(size = 0.7) +
+  facet_wrap(~gender) + 
+  labs(x = "Age", y = "People killed by police per year per 100,000")
+
+
+
+ggplot(state_counts,
+       aes(xmin = n_rt_min,
+           xmax = n_rt_max,
+           x = n_rt,
+           y = reorder(state, n_rt),
+           color = pl280)) + 
+  geom_pointrange() + 
+  labs(x = "AIAN People killed by police per year per 100,000 population",
+       y = "")
+
+## by agency type
+
+### make agency type deaths per 100,000 per year for national pop
+### make pl280 population scaled for pl280 states
+
+agency_type<-fe %>% 
+  group_by(agency_type) %>% 
+  summarise(n=n()) 
+
+ggplot(agency_type,
+       aes(x = n, y = reorder(agency_type, n))) +
+  geom_col() + 
+  labs(x = "AIAN people killed by police 2011 - 2020",
+       y = "Law enforcement agency type")
+
+agency_type<-fe %>% 
+  group_by(agency_type, pl280) %>% 
+  summarise(n=n()) 
+
+ggplot(agency_type,
+       aes(x = n, y = reorder(agency_type, n))) +
+  geom_col() + 
+  labs(x = "AIAN people killed by police 2011 - 2020",
+       y = "Law enforcement agency type") + 
+  facet_wrap(~pl280)
+
+## on / off tribal lands
+# need to merge onto shape file first
+
+####### 
+
+
+```
+
+
+## H1: Native death by law enforcement will become more common (or increase) as one moves west of the Mississippi River.
+
+```{r}
+ggplot(fe_sf) + 
+  geom_histogram(aes(x = distance_ms)) + 
+  geom_vline(aes(xintercept = 0), lty = 2) +
+  labs(title = "Figure 1. Histogram of location of death's proximity to MS River",
+       subtitle = "negative numbers are west, positive numbers are east")
+```
+
+Figure 1 shows the distribution of AIAN people killed by police documented in Fatal Encounters relative to the nearest point on the Mississippi River. Deaths are far more common West of the MS river, but do not increase consistently as one moves west. They peak within 500 km of the MS River, with a local maximum about 2000 km from the MS river. ADD MORE DETAIL
+
+*TO ADD? per capita rates based on average state distance to MS river - not sure this will be very meaningful though. Makes TX and SD similar spatially, but we know the distributions there aren't similar at all. I think this histogram is enough*
+
+## H2: Native death by law enforcement will be greatest at high-contact zones such as reservation border towns, and urban centers with a high population of Native Peoples.
+ 
+```{r}
+ggplot(fe_sf) + 
+  geom_histogram(aes(x = distance_aian)) + 
+  labs(title = "Figure 2. Proximity to Native land when killed",
+       subtitle = "Distance of zero indicates on native land")
+```
+
+```{r}
+proximity_table<-fe_sf %>% 
+  mutate(location = case_when(
+    distance_aian == 0 ~ "On AIAN land",
+    distance_aian <= 10 ~ "Within 10km of AIAN border",
+    distance_aian <= 50 ~"Within 50km of AIAN border",
+    T ~ "Further than 50km from AIAN border"
+  )) %>% 
+  group_by(location) %>% 
+  summarise(n = n())
+
+st_geometry(proximity_table)<-NULL
+
+knitr::kable(proximity_table,
+             caption = "Table 1. Proximity to Native land when killed by police")
+```
+
+As shown in figure 2 and table 1, more than 80 percent of people killed by police identified as AIAN in Fatal Encounters were killed either on or within 50km of Native lands. MORE ON THIS LATER
+
+## H3: Native death by law enforcement will occur more often in geographic locations most impacted by Termination Era federal Indian policy (1947-1961)
+
+```{r}
+
+
+ggplot(state_counts_map,
+       aes(x=x, y = y, fill = pl280,
+           group = group)) + 
+  geom_polygon(color = "black") + 
+  theme_void() +
+  labs(fill = "") +
+  theme(legend.position = "bottom") + 
+  labs(title = "Figure N. PL 280 status by state")
+
+pl280_counts<-state_counts_map %>% 
+  filter(state!="DC") %>% 
+  select(pl280, state, n, pop, pop_max, pop_min) %>% 
+  distinct() %>% 
+  group_by(pl280) %>% 
+  summarise(n_rt_lwr = sum(n) / sum(pop_max) * 1e5 / (3519 / 365.25),
+            n_rt_upr = sum(n)/ sum(pop_min) * 1e5 / (3519 / 365.25),
+            n_rt = sum(n) / sum(pop) * 1e5 / (3519 / 365.25)) 
+
+ggplot(pl280_counts) + 
+  geom_linerange(aes(y = reorder(pl280, n_rt), xmin = n_rt_lwr, xmax = n_rt_upr)) + 
+  geom_point(aes(y = reorder(pl280, n_rt), x = n_rt)) + 
+  labs(y = "PL 280 Status", x = "Mortality rate",
+       title = "Figure N. AIAN people killed by police by state PL 280 status",
+       subtitle = "Deaths per 100,000 persons per year") + 
+  theme_bw()
+
+
+```
+
+
+

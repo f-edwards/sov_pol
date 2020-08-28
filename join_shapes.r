@@ -1,8 +1,6 @@
 ##############################
 
 library(tidyverse)
-library(haven)
-library(lubridate)
 library(ipumsr)
 library(sf)
 library(rgdal)
@@ -26,10 +24,11 @@ nhgis_aian <- read_nhgis_sf(
   shape_file = aian_shp_file
 )
 
-d <- data.frame(lon=fe$lon, lat=fe$lat)
+d <- data.frame(lon=fe$Longitude, lat=fe$Latitude)
 coordinates(d) <- c("lon", "lat")
 proj4string(d) <- CRS("+init=epsg:4326") # WGS 84
 CRS.new <- CRS("+init=esri:102003")
 d.convert <- data.frame(spTransform(d, CRS.new))
-fe<- bind_cols(fe %>% 
-                 select(-lon, -lat), d.convert)
+fe<- bind_cols(fe, d.convert)
+
+
