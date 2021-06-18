@@ -1,19 +1,19 @@
 #### read and format SEER population data
 library(tidyverse)
 
-pop<-read_fwf("./data/us.1990_2018.19ages.adjusted.txt",
+pop<-read_fwf("./data/us.1990_2019.19ages.adjusted.txt",
               fwf_widths(c(4, 2, 2, 3, 2, 1, 1, 1, 2, 8),
                          c("year", "state", "st_fips", "cnty_fips", "reg", "race", 
                            "hisp", "sex", "age", "pop")))
 
 pop<-pop%>%
-  filter(year==2018) %>% 
+  filter(year==2019) %>% 
   mutate(pop = as.integer(pop))%>%
   mutate(race_ethn = 
            case_when(
              race==1 & hisp ==0 ~ "white",
              race==2 ~ "black",
-             race==3 ~ "amind",
+             race==3 ~ "aian",
              race==4 ~ "asian",
              hisp==1 ~ "latinx")) %>%
   mutate(sex = case_when(
@@ -40,3 +40,6 @@ pop<-pop%>%
       age=="17" ~ "80-84",
       age=="18" ~ "85+"))
 
+### use these for national age_spec tables
+
+write_csv(pop, "./data/seer_2019_aian.csv")

@@ -4,9 +4,14 @@ library(lubridate)
 
 
 # ... read fatal encounters
-fe <- read_csv("./data/fe_8_4_20.csv", 
+fe <- read_csv("./data/fe_6_18_21.csv", 
                guess_max = 1e5) %>% 
-  filter(!(is.na(`Unique ID`))) 
+  filter(!(is.na(`Unique ID`))) %>% 
+  filter(!(is.na(Age)))
+
+#### IMPUTE LATER!!!!!!!!!!
+#### 2 CASES MISSING AGE
+#### NO AIAN IMPUTED CASES IN DATA, I SHOULD DO IMPS
 
 ### output for manual inclusion audit
 # fe_aian<-fe %>% 
@@ -21,25 +26,31 @@ fe <- read_csv("./data/fe_8_4_20.csv",
 # .... make names more user-friendly
 fe<-fe %>% 
   rename(id = `Unique ID`,
-         name = "Subject's name",
-         age = "Subject's age",
-         gender = "Subject's gender",
-         race = "Subject's race",
-         state = `Location of death (state)`,
+         name = Name,
+         age = Age,
+         gender = Gender,
+         race = Race,
+         race_imp = `Race with imputations`,
+         state = State,
          county = `Location of death (county)`,
-         agency = `Agency responsible for death`,
-         cause_of_death = `Cause of death`,
-         official_disposition = `Dispositions/Exclusions INTERNAL USE, NOT FOR ANALYSIS`,
-         year = `Date (Year)`) %>% 
-  select(id, name, age, gender, race, state,
-         county, Latitude, Longitude, agency, cause_of_death, official_disposition,
-         year) %>% 
-  filter(year>2010) %>% 
-  filter(race=="Native American/Alaskan") %>% 
-  mutate(
-    fe_cause_of_death = 
-      case_when(grepl("suicide", tolower(official_disposition)) ~ "suicide",
-                 T ~ cause_of_death))
+         agency = `Agency or agencies involved`,
+         force = `Intended use of force (Developing)`) %>% 
+  mutate(date = mdy(`Date of injury resulting in death (month/day/year)`),
+         year = year(date)) %>% 
+  select(id, name, age, gender, race, race_imp,
+         state, county, Latitude, Longitude, agency, force,
+         year, date) %>% 
+  filter(year>=2010) %>% 
+  filter(race == "Native American/Alaskan")
+
+
+### manually correct age for Hubert Thomas Burns Jr.
+### age 34 according to obit at https://www.legacy.com/obituaries/name/hubert-burns-obituary?pid=180276209
+
+
+fe<-fe %>% 
+  mutate(age = ifelse(
+    id==17739, "34", age))
 
 ### code for type of agency
 
@@ -66,46 +77,42 @@ fe<-fe %>%
 
 
 ### use FCC API to map lat/long to FIPS Block for census join
-#source(map_fe_census_block.R)
+# source(map_fe_census_block.R)
 ### creates block_map.csv
 
 blocks<-read_csv("./data/block_map.csv")
 
 fe<-fe %>% 
+  mutate(Latitude = as.numeric(Latitude),
+         Longitude = as.numeric(Longitude)) %>% 
   left_join(blocks %>% 
               rename(Latitude = lat,
-                     Longitude = long))
+                     Longtitude = long))
 
-### make pl280 variable
-
-fe$pl280<-case_when(
-  fe$state %in% c("CA", "MN", "NE", "OR", 
-                          "WI", "AK") ~ "Mandatory",
-  fe$state %in% c("NV", "FL", "ID", "IA", 
-                          "WA", "SD", "MT", "ND", 
-                          "AZ", "UT") ~ "Optional",
-  T ~ "Non-PL280"
-)
 
 ### recode age cats
 
 fe<-fe %>% 
-  mutate(age = as.numeric(age)) %>% 
+  mutate(age = as.numeric(age)) %>%
   mutate(age_cat = case_when(
-    age<5 ~ "0-5",
-    age<10 ~ "5-9",
-    age<15 ~ "10-14",
-    age<18 ~ "15-17",
-    age<20 ~ "18-19",
-    age<25 ~ "20-24",
-    age<30 ~ "25-29",
-    age<35 ~ "30-34",
-    age<45 ~ "35-44",
-    age<55 ~ "45-54",
-    age<65 ~ "55-64",
-    age<75 ~ "65-74",
-    age<85 ~ "75-84",
-    age>85 ~ "85+"
-  ))
+    age<1 ~ "0",
+    age>=1 & age<=4 ~ "1-4",
+    age>=5 & age<=9 ~ "5-9",
+    age>=10 & age<=14 ~ "10-14",
+    age>=15 & age<=19 ~ "15-19",
+    age>=20 & age<=24 ~ "20-24",
+    age>=25 & age<=29 ~ "25-29",
+    age>=30 & age<=34 ~ "30-34",
+    age>=35 & age<=39 ~ "35-39",
+    age>=40 & age<=44 ~ "40-44",
+    age>=45 & age<=49 ~ "45-49",
+    age>=50 & age<=54 ~ "50-54",
+    age>=55 & age<=59 ~ "55-59",
+    age>=60 & age<=64 ~ "60-64",
+    age>=65 & age<=69 ~ "65-69",
+    age>=70 & age<=74 ~ "70-74",
+    age>=75 & age<=79 ~ "75-79",
+    age>=80 & age<=84 ~ "80-84",
+    age>=85  ~ "85+"))
 
 rm(blocks)

@@ -1,7 +1,7 @@
 ---
 title: "main"
 author: "Frank Edwards"
-date: "8/27/2020"
+date: "6/18/21"
 output: html_document
 ---
 
@@ -10,9 +10,14 @@ knitr::opts_chunk$set(echo = F)
 
 library(tidyverse)
 
+theme_set(theme_minimal())
+
+
 ## read in fatal encounters as fe
-## fe includes cases from 1/1/2011 - 8/20/2020
-## 3,519 days / 365.25 = 9.6 years
+## normalize for time covered in dataset
+
+## time constant to normalize to years
+t_norm<-as.numeric(max(fe$date) - min(fe$date))/365.25
 
 source("read_fe.R")
 
@@ -28,43 +33,119 @@ source("join_shapes.r")
 source("distance_to_aianh.r")
 
 
-### format state-level data
+### make pl280 variable
+make_pl280<-function(x){
+  x$pl280<-case_when(
+    x$state %in% c("CA", "MN", "NE", "OR", 
+                   "WI", "AK") ~ "Mandatory",
+    x$state %in% c("NV", "FL", "ID", "IA", 
+                   "WA", "SD", "MT", "ND", 
+                   "AZ", "UT") ~ "Optional",
+    T ~ "Non-PL280"
+  )
+  return(x)
+}
 
-library(usmap)
-us_map <- usmap::us_map() 
 
-us_map<-us_map %>% 
-  rename(state = abbr)
+fe<-make_pl280(fe)
 
 ## state-level risk
-
 state_counts<-fe %>% 
-  group_by(state, pl280) %>% 
-  summarise(n = n()) %>% 
-  right_join(state_dat %>% 
-              filter(sex == "Total", age == "Total") %>% 
-              select(state, pop, error)) %>% 
-  mutate(n = ifelse(is.na(n), 0, n)) %>% 
-  filter(!(is.na(state))) %>% 
-  mutate(pop_max = pop + error, ### apply ACS margins for 90% interval
-         pop_min = pop - error) %>% 
-  mutate(n_year = n / (3519 / 365.25)) %>% ### normalize to deaths / year
-  mutate(n_rt_max = n_year / pop_min * 1e5,
-         n_rt_min = n_year / pop_max* 1e5,
-         n_rt = n_year / pop * 1e5) 
+  rename(sex = gender) %>% 
+  group_by(state, sex, age_cat) %>% 
+  summarise(n = n()) %>%
+  full_join(age_sex_pop %>% 
+              rename(age_cat = age) %>% 
+              filter(race_ethn == "aian") %>% 
+              group_by(state, sex, age_cat) %>% 
+              summarise(pop = sum(pop))) %>% 
+  mutate(n = ifelse(is.na(n), 0, n)) ## fill in zero deaths
 
-state_counts_map<-state_counts %>% 
-  right_join(us_map) %>% 
-  mutate(n_rt = ifelse(is.na(n_rt), 0, n_rt))
+### national risks
 
-state_counts_map$pl280<-case_when(
-  state_counts_map$state %in% c("CA", "MN", "NE", "OR", 
-                  "WI", "AK") ~ "Mandatory",
-  state_counts_map$state %in% c("NV", "FL", "ID", "IA", 
-                  "WA", "SD", "MT", "ND", 
-                  "AZ", "UT") ~ "Optional",
-  T ~ "Non-PL280"
-)
+natl_counts<-fe %>% 
+  rename(sex = gender) %>% 
+  group_by(sex, age_cat) %>% 
+  summarise(n = n()) %>%
+  full_join(age_sex_pop %>% 
+               rename(age_cat = age) %>% 
+               filter(race_ethn == "aian") %>% 
+               group_by(sex, age_cat) %>% 
+              summarise(pop = sum(pop))) %>% 
+  mutate(n = ifelse(is.na(n), 0, n))   ## fill in zero deaths
+
+### compute age-specific death rates for state and natl
+natl_counts<-natl_counts %>% 
+  mutate(asdr = n / pop / t_norm)
+
+state_counts<-state_counts %>% 
+  mutate(asdr = n / pop / t_norm)
+
+### compute age-adjusted death rate for states
+state_adr<-state_counts %>% 
+  left_join(natl_counts %>% 
+              select(sex, age_cat, pop) %>% 
+              rename(pop_natl = pop)) %>% 
+  mutate(adr_count = asdr * pop_natl) %>% 
+  group_by(state, sex) %>% 
+  summarise(n = sum(n, na.rm=T), 
+            adr_count = sum(adr_count, na.rm=T), 
+            pop = sum(pop, na.rm=T), 
+            pop_natl = sum(pop_natl, na.rm=T)) %>% 
+  mutate(adr = adr_count / pop_natl * 1e5,
+         cdr = n / pop / t_norm * 1e5)
+
+## compute age-adjusted death rate for census divisions
+### attach census division from 2010 census file
+div_counts<-state_counts %>% 
+  left_join(state_dat %>% 
+              select(state, DIVISIONA)) %>% 
+  group_by(DIVISIONA, sex, age_cat) %>% 
+  summarise(n=sum(n), pop = sum(pop)) %>% 
+  ungroup() %>% 
+  mutate(asdr = n / pop / t_norm) %>% 
+  left_join(natl_counts %>% 
+              select(sex, age_cat, pop) %>% 
+              rename(pop_natl = pop)) %>% 
+  mutate(adr_count = asdr * pop_natl) %>% 
+  group_by(DIVISIONA, sex) %>% 
+  summarise(n = sum(n), adr_count = sum(adr_count), pop = sum(pop), pop_natl = sum(pop_natl)) %>% 
+  mutate(adr = adr_count / pop_natl * 1e5,
+         cdr = n / pop / t_norm * 1e5)  
+
+
+#### VISUALS FOR ADR, ASDR
+
+### Age spec visual
+### convert age to numeric for plotting
+age_recode<-function(df){
+  age_recode<-df%>%
+    mutate(age = 
+      case_when(
+        age=="0" ~ "0",
+        age=="1-4" ~ "1",
+        age=="5-9" ~ "5",
+        age=="85+" ~ "85",
+        !age%in%c("0", "85+") ~ substr(age, 1, 2)
+      ),
+      age = as.numeric(age))
+      return(age_recode)
+}
+
+natl_counts<-age_recode(natl_counts %>% 
+                          rename(age = age_cat))
+
+ggplot(natl_counts,
+       aes(x = age, y = asdr * 1e5)) + 
+  geom_line() + 
+  facet_wrap(~sex, scales = "free") + 
+  labs(title = "AIAN age-specific death rates per 100,000",
+       subtitle = "US 2011 - 2020",
+       x = "Age",
+       y = "Rate") + 
+  ggsave("./vis/age_spec_nat.png", width = 7)
+
+### State ADR 
 
 library(usmap)
 us_map <- usmap::us_map() 
@@ -72,18 +153,71 @@ us_map <- usmap::us_map()
 us_map<-us_map %>% 
   rename(state = abbr)
 
-state_counts_map<-state_counts %>% 
-  right_join(us_map) %>% 
-  mutate(n_rt = ifelse(is.na(n_rt), 0, n_rt))
+state_adr_map<-state_adr %>% 
+  right_join(us_map) 
 
-state_counts_map$pl280<-case_when(
-  state_counts_map$state %in% c("CA", "MN", "NE", "OR", 
-                  "WI", "AK") ~ "Mandatory",
-  state_counts_map$state %in% c("NV", "FL", "ID", "IA", 
-                  "WA", "SD", "MT", "ND", 
-                  "AZ", "UT") ~ "Optional",
-  T ~ "Non-PL280"
-)
+library(viridisLite)
+library(gridExtra)
+
+p1<-ggplot(state_adr_map %>% 
+             filter(sex == "Male"),
+       aes(x=x, y = y, fill = adr,
+           group = group)) + 
+  geom_polygon(color = "black") + 
+  theme_void() +
+  labs(fill = "") +
+  theme(legend.position = "bottom") + 
+  scale_fill_viridis_c() + 
+  labs(subtitle = "Male age-adjusted mortality")
+
+p2<-ggplot(state_adr_map %>% 
+             filter(sex == "Female"),
+       aes(x=x, y = y, fill = adr,
+           group = group)) + 
+  geom_polygon(color = "black") + 
+  theme_void() +
+  labs(fill = "") +
+  theme(legend.position = "bottom") + 
+  scale_fill_viridis_c() + 
+  labs(subtitle = "Female age-adjusted mortality")
+
+g<-arrangeGrob(p1, p2)
+ggsave(file = "./vis/adr_state.png", g, width = 8, height = 12)
+
+### Division ADR
+div_map<-state_adr_map %>% 
+  select(-n, -adr_count, -pop, -pop_natl, -adr, -cdr) %>% 
+  left_join(state_dat %>% 
+              select(state, DIVISIONA)) %>% 
+  left_join(div_counts) 
+  
+p1<-ggplot(div_map %>% 
+             filter(sex == "Male"),
+       aes(x=x, y = y, fill = adr,
+           group = group)) + 
+  geom_polygon(color = "black") + 
+  theme_void() +
+  labs(fill = "") +
+  theme(legend.position = "bottom") + 
+  scale_fill_viridis_c() + 
+  labs(subtitle = "Male age-adjusted mortality")
+
+p2<-ggplot(div_map %>% 
+             filter(sex == "Female"),
+       aes(x=x, y = y, fill = adr,
+           group = group)) + 
+  geom_polygon(color = "black") + 
+  theme_void() +
+  labs(fill = "") +
+  theme(legend.position = "bottom") + 
+  scale_fill_viridis_c() + 
+  labs(subtitle = "Female age-adjusted mortality")
+
+g<-arrangeGrob(p1, p2)
+ggsave(file = "./vis/adr_division.png", g, width = 8, height = 12)
+
+### format state-level data
+
 
 ```
 
@@ -91,111 +225,18 @@ state_counts_map$pl280<-case_when(
 
 ## Descriptives
 
-```{r}
-####################################
-############ MAPS
-####################################
-########################
-library(viridisLite)
 
-ggplot(state_counts_map,
-       aes(x=x, y = y, fill = n_rt,
-           group = group)) + 
-  geom_polygon(color = "black") + 
-  theme_void() +
-  labs(fill = "") +
-  theme(legend.position = "bottom") + 
-  scale_fill_viridis_c()
-```
-
-
-```{r}
-### tables/figures
-
-## age and sex specific risk
-## adjusted to per year per 100,000 for 9.6 year period
-
-age_sex<- fe %>% 
-  group_by(age_cat, gender) %>% 
-  summarise(deaths = n()) %>% 
-  filter(!(is.na(age_cat))) %>% 
-  right_join(nation_dat %>% 
-              select(error, sex, age, pop) %>% 
-              filter(age!="Total", sex!="Total") %>% 
-              mutate(sex = ifelse(sex=="M", "Male", "Female")) %>% 
-              rename(gender = sex, age_cat = age)) %>% 
-  mutate(deaths = ifelse(is.na(deaths), 0, deaths)) %>% 
-  mutate(mort_lwr = deaths / (pop+error) /(3519/365.25) * 1e5,
-         mort_upr = deaths/(pop-error) /(3519/365.25) * 1e5,
-         mort = deaths / pop /(3519/365.25) * 1e5) %>% 
-  mutate(age_lwr = 
-           case_when(
-             age_cat=="85+" ~ "85",
-             nchar(age_cat)==3 ~ substr(age_cat, 1, 1),
-             nchar(age_cat)==5 ~ substr(age_cat, 1, 2)
-           )) %>% 
-  mutate(age_lwr = as.numeric(age_lwr))
-
-ggplot(age_sex, 
-       aes(y = mort, 
-           x = age_lwr,
-           ymin = mort_lwr,
-           ymax = mort_upr)) + 
-  geom_line() +
-  geom_point(size = 0.7) +
-  facet_wrap(~gender) + 
-  labs(x = "Age", y = "People killed by police per year per 100,000")
-
-
-
-ggplot(state_counts,
-       aes(xmin = n_rt_min,
-           xmax = n_rt_max,
-           x = n_rt,
-           y = reorder(state, n_rt),
-           color = pl280)) + 
-  geom_pointrange() + 
-  labs(x = "AIAN People killed by police per year per 100,000 population",
-       y = "")
-
-## by agency type
-
-### make agency type deaths per 100,000 per year for national pop
-### make pl280 population scaled for pl280 states
-
-agency_type<-fe %>% 
-  group_by(agency_type) %>% 
-  summarise(n=n()) 
-
-ggplot(agency_type,
-       aes(x = n, y = reorder(agency_type, n))) +
-  geom_col() + 
-  labs(x = "AIAN people killed by police 2011 - 2020",
-       y = "Law enforcement agency type")
-
-agency_type<-fe %>% 
-  group_by(agency_type, pl280) %>% 
-  summarise(n=n()) 
-
-ggplot(agency_type,
-       aes(x = n, y = reorder(agency_type, n))) +
-  geom_col() + 
-  labs(x = "AIAN people killed by police 2011 - 2020",
-       y = "Law enforcement agency type") + 
-  facet_wrap(~pl280)
-
-## on / off tribal lands
-# need to merge onto shape file first
-
-####### 
-
-
-```
 
 
 ## H1: Native death by law enforcement will become more common (or increase) as one moves west of the Mississippi River.
 
 ```{r}
+### n by west and east
+table(fe_sf$distance_ms<0)
+
+sum(fe_sf$distance_ms<0)/nrow(fe_sf)
+### 94 % west of MS
+
 ggplot(fe_sf) + 
   geom_histogram(aes(x = distance_ms)) + 
   geom_vline(aes(xintercept = 0), lty = 2) +
@@ -204,8 +245,6 @@ ggplot(fe_sf) +
 ```
 
 Figure 1 shows the distribution of AIAN people killed by police documented in Fatal Encounters relative to the nearest point on the Mississippi River. Deaths are far more common West of the MS river, but do not increase consistently as one moves west. They peak within 500 km of the MS River, with a local maximum about 2000 km from the MS river. ADD MORE DETAIL
-
-*TO ADD? per capita rates based on average state distance to MS river - not sure this will be very meaningful though. Makes TX and SD similar spatially, but we know the distributions there aren't similar at all. I think this histogram is enough*
 
 ## H2: Native death by law enforcement will be greatest at high-contact zones such as reservation border towns, and urban centers with a high population of Native Peoples.
  
@@ -237,37 +276,62 @@ As shown in figure 2 and table 1, more than 80 percent of people killed by polic
 
 ## H3: Native death by law enforcement will occur more often in geographic locations most impacted by Termination Era federal Indian policy (1947-1961)
 
+
 ```{r}
+## by agency type
+
+### make agency type deaths per 100,000 per year for national pop
+### make pl280 population scaled for pl280 states
+
+counts_280<-make_pl280(state_counts) %>% 
+  group_by(pl280, age_cat, sex) %>% 
+  summarise(pop = sum(pop),
+            n = sum(n)) %>% 
+  rename(age = age_cat) %>% 
+  age_recode()
+
+### compute age-specific death rates for state and natl
+counts_280<-counts_280 %>% 
+  mutate(asdr = n / pop / t_norm)
+
+### compute age-specific death rates for state and natl
+### compute age-adjusted death rate for states
+adr_280<-counts_280 %>% 
+  left_join(natl_counts %>% 
+              select(sex, age, pop) %>% 
+              rename(pop_natl = pop)) %>% 
+  mutate(adr_count = asdr * pop_natl) %>% 
+  group_by(pl280, sex) %>% 
+  summarise(n = sum(n, na.rm=T), 
+            adr_count = sum(adr_count, na.rm=T), 
+            pop = sum(pop, na.rm=T), 
+            pop_natl = sum(pop_natl, na.rm=T)) %>% 
+  mutate(adr = adr_count / pop_natl * 1e5,
+         cdr = n / pop / t_norm * 1e5)
+
+### death rates by pl280 state type
+ggplot(adr_280,
+       aes(x = sex, y = adr)) + 
+  geom_col() + 
+  coord_flip() + 
+  facet_wrap(~pl280)
 
 
-ggplot(state_counts_map,
-       aes(x=x, y = y, fill = pl280,
-           group = group)) + 
-  geom_polygon(color = "black") + 
-  theme_void() +
-  labs(fill = "") +
-  theme(legend.position = "bottom") + 
-  labs(title = "Figure N. PL 280 status by state")
+agency_type<-fe %>% 
+  group_by(agency_type) %>% 
+  summarise(n=n()) 
 
-pl280_counts<-state_counts_map %>% 
-  filter(state!="DC") %>% 
-  select(pl280, state, n, pop, pop_max, pop_min) %>% 
-  distinct() %>% 
-  group_by(pl280) %>% 
-  summarise(n_rt_lwr = sum(n) / sum(pop_max) * 1e5 / (3519 / 365.25),
-            n_rt_upr = sum(n)/ sum(pop_min) * 1e5 / (3519 / 365.25),
-            n_rt = sum(n) / sum(pop) * 1e5 / (3519 / 365.25)) 
-
-ggplot(pl280_counts) + 
-  geom_linerange(aes(y = reorder(pl280, n_rt), xmin = n_rt_lwr, xmax = n_rt_upr)) + 
-  geom_point(aes(y = reorder(pl280, n_rt), x = n_rt)) + 
-  labs(y = "PL 280 Status", x = "Mortality rate",
-       title = "Figure N. AIAN people killed by police by state PL 280 status",
-       subtitle = "Deaths per 100,000 persons per year") + 
-  theme_bw()
-
+ggplot(agency_type,
+       aes(x = n, y = reorder(agency_type, n))) +
+  geom_col() + 
+  labs(x = "AIAN people killed by police 2011 - 2020",
+       y = "Law enforcement agency type")
 
 ```
 
 
+
+THIS ALL WORKS
+
+NOW DO CORRELATION WITH FOSTER CARE AND MAPS
 
